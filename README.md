@@ -44,31 +44,6 @@ You should see:
 
 Open `http://localhost:5000` to see the dashboard on your local machine.
 
----
-
-## Making it publicly accessible (free, no signup needed)
-
-### Option A — Cloudflare Tunnel (recommended)
-
-1. Download `cloudflared` from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-2. Run alongside your server:
-   ```bash
-   cloudflared tunnel --url http://localhost:5000
-   ```
-3. Cloudflare prints a public URL like `https://something.trycloudflare.com`
-4. Share that URL — it works immediately, no account needed
-
-> ⚠️  The anonymous Cloudflare Tunnel URL changes every time you restart.
-> For a permanent URL, create a free Cloudflare account and use a named tunnel.
-
-### Option B — ngrok
-
-```bash
-ngrok http 5000
-```
-
----
-
 ## How it works (XML v2.0 Protocol)
 
 The collector follows the correct Camera Connect XML v2.0 protocol sequence:
@@ -114,52 +89,4 @@ The Flask server exposes `/api/cameras`:
     }
   ]
 }
-```
-
-Level values are 0–100% (raw 0–255 u8bit scaled to percentage).
-
----
-
-## NS_IDs monitored
-
-| NS_ID | Name                        | Type  | Field            |
-|-------|-----------------------------|-------|------------------|
-| 8204  | Cam2Base Fiber Status       | Mode  | rx_cable_status  |
-| 8205  | Cam2Base Optical Margin     | Value | rx_cable_level   |
-| 8206  | Bs2Cam Fiber Status         | Mode  | tx_cable_status  |
-| 8207  | Bs2Cam Optical Margin       | Value | tx_cable_level   |
-| 8242  | Cam2Bs Fiber Signal Quality | Value | rx_signal_level  |
-| 8244  | Cam2Base Fiber Signal Status| Mode  | rx_signal_status |
-| 8246  | Bs2Cam Fiber Signal Quality | Value | tx_signal_level  |
-| 8248  | Bs2Cam Fiber Signal Status  | Mode  | tx_signal_status |
-
----
-
-## Troubleshooting
-
-**"No cameras found"**
-- Ping the gateway IP to confirm network connectivity
-- Check the gateway's web interface to confirm the XML port (default 8080)
-- Try setting `CAMERA_NUMBERS` manually (e.g. `[50, 51, 52]`) if auto-discovery fails
-
-**Status shows as "unknown" even when connected**
-- The Mode option mappings may not have loaded. Check the log for "Loaded option mappings"
-- Some camera models may report fibre status on Basestation devices rather than Camera
-  devices — the collector subscribes to both
-
-**Dashboard shows — for level values**
-- That camera may not support those particular NS_IDs (varies by camera model/software version)
-- Check the gateway's own web interface to see which functions are available
-
----
-
-## Files
-
-```
-gv_fibre_monitor/
-├── app.py          — Flask server (run this)
-├── collector.py    — TCP connection + XML v2.0 protocol logic
-├── dashboard.py    — HTML dashboard (dark broadcast-style UI)
-├── requirements.txt
-└── README.md
 ```
