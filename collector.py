@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 # ── Configuration ──────────────────────────────────────────────────────────────
 GATEWAY_IP     = "192.168.61.10"   # Camera Connect Gateway IP address
 GATEWAY_PORT   = 8080              # Default XML port
-APP_NAME       = "FibreMonitor"    # Visible in gateway web interface / logs
+APP_NAME       = "F.L.A.P.S"    # Visible in gateway web interface / logs
 CAMERA_NUMBERS = []                # Specific camera numbers to monitor; [] = auto-discover
 
 
