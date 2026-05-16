@@ -429,7 +429,9 @@ class GrassValleyCollector:
             elif d["state"] == "connected":
                 with self._lock:
                     known = cam in self._cameras
+
                 if not known:
+                    # New camera — subscribe and notify
                     if CAMERA_NUMBERS and cam not in CAMERA_NUMBERS:
                         continue
                     state = self._make_state(d)
@@ -442,6 +444,31 @@ class GrassValleyCollector:
                             self._sock.sendall(_subscribe([state]))
                         except OSError as e:
                             log.warning(f"Could not subscribe to CAM {cam}: {e}")
+                else:
+                    # Already known — check if alias/label changed and update if so
+                    new_alias = d.get("alias", "").strip()
+                    new_deviceid = d.get("deviceid", "").strip()
+                    with self._lock:
+                        state = self._cameras[cam]
+                        changed = (
+                            state.get("alias")    != new_alias or
+                            state.get("deviceid") != new_deviceid
+                        )
+                        if changed:
+                            import re
+                            sort_key = cam
+                            if new_alias:
+                                m = re.search(r'\d+', new_alias)
+                                if m:
+                                    sort_key = int(m.group())
+                            state["alias"]    = new_alias
+                            state["deviceid"] = new_deviceid
+                            state["label"]    = new_alias or new_deviceid or f"CAM {cam}"
+                            state["sort_key"] = sort_key
+                            snapshot = dict(state)
+                    if changed:
+                        log.info(f"Camera {cam} alias updated: {new_alias or new_deviceid}")
+                        self._notify({"event": "camera", "data": snapshot})
 
         # SFP value updates
         with self._lock:

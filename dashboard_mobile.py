@@ -78,7 +78,7 @@ main { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
   border-bottom: 1px solid var(--border);
 }
 .cam-title { font-size: 19px; font-weight: 800; letter-spacing: -.03em; }
-.cam-sub   { display: block; font-size: 10px; font-weight: 400; color: var(--dim); margin-top: 1px; letter-spacing: 0; }
+.cam-sub   { display: block; font-size: 12px; font-weight: 400; color: var(--dim); margin-top: 1px; letter-spacing: 0; }
 
 .badge {
   font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;

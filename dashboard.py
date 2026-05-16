@@ -89,8 +89,8 @@ main {
   border-bottom: 1px solid var(--border);
 }
 .cam-title { font-size: 16px; font-weight: 800; letter-spacing: -.02em; }
-.cam-sub   { display: block; font-size: 10px; font-weight: 400; color: var(--dim); margin-top: 1px; letter-spacing: 0; }
-.cam-sub   { display: block; font-size: 10px; font-weight: 400; color: var(--dim); margin-top: 1px; letter-spacing: 0; }
+.cam-sub   { display: block; font-size: 12px; font-weight: 400; color: var(--dim); margin-top: 1px; letter-spacing: 0; }
+.cam-sub   { display: block; font-size: 12px; font-weight: 400; color: var(--dim); margin-top: 1px; letter-spacing: 0; }
 
 .badge {
   font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
