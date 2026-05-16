@@ -89,6 +89,8 @@ main {
   border-bottom: 1px solid var(--border);
 }
 .cam-title { font-size: 16px; font-weight: 800; letter-spacing: -.02em; }
+.cam-sub   { display: block; font-size: 10px; font-weight: 400; color: var(--dim); margin-top: 1px; letter-spacing: 0; }
+.cam-sub   { display: block; font-size: 10px; font-weight: 400; color: var(--dim); margin-top: 1px; letter-spacing: 0; }
 
 .badge {
   font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
@@ -147,7 +149,7 @@ main {
 <body>
 
 <header>
-  <h1>F.L.A.P.S. - <i>Fibre Level Analysis & Power System</i></h1>
+  <h1>Fibre Monitor</h1>
   <div class="gw-status">
     <div class="dot" id="dot"></div>
     <span id="gw-lbl">Connecting\u2026</span>
@@ -172,7 +174,6 @@ function cableCls(level, okLimit, errLimit) {
   if (okLimit  != null || errLimit != null)  return 'warn';
   return 'ok';
 }
-
 function signalCls(level, okLimit, errLimit) {
   if (level == null) return 'unknown';
   if (okLimit  != null && level <= okLimit)  return 'ok';
@@ -180,29 +181,19 @@ function signalCls(level, okLimit, errLimit) {
   if (okLimit  != null || errLimit != null)  return 'warn';
   return 'ok';
 }
-
-function signalPct(level, errLimit) {
-  if (level == null) return null;
-  if (errLimit == null || errLimit === 0) return Math.min(100, Math.max(0, 100 - level));
-  return Math.min(100, Math.max(0, (1 - level / errLimit) * 100));
-}
-
-// Cable bar: fixed scale -2 to 8 dBm. Single colour based on threshold zone.
+// Cable: fixed scale -2 to 8 dBm
 function cablePct(level) {
-  if (level == null) return 0;
-  return Math.min(100, Math.max(0, (level + 2) / 10 * 100));
+  return level != null ? Math.min(100, Math.max(0, (level + 2) / 10 * 100)) : 0;
 }
-
-// Signal bar: fixed scale 0-100%. Single colour based on threshold zone.
-// level=0 → 100% bar (full signal), level=errLimit → 0% bar (no signal).
+// Signal: fixed scale 0-100% (0 raw = 100%, errLimit raw = 0%)
 function signalPct(level, errLimit) {
   if (level == null) return 0;
   const max = errLimit != null && errLimit > 0 ? errLimit : 7;
   return Math.min(100, Math.max(0, (1 - level / max) * 100));
 }
 
-// ── Row HTML builders ─────────────────────────────────────────────
-function cableRow(chId, level, status, okLimit, errLimit) {
+// ── Row builders ──────────────────────────────────────────────────
+function cableRow(chId, level, okLimit, errLimit) {
   const cls = cableCls(level, okLimit, errLimit);
   const w   = cablePct(level);
   const val = level != null ? level.toFixed(1) + '\u00a0dBm' : '\u2014';
@@ -212,35 +203,31 @@ function cableRow(chId, level, status, okLimit, errLimit) {
     <span class="row-val ${cls}">${val}</span>
   </div>`;
 }
-
-function signalRow(chId, level, status, okLimit, errLimit) {
+function signalRow(chId, level, okLimit, errLimit) {
   const cls = signalCls(level, okLimit, errLimit);
   const w   = signalPct(level, errLimit);
-  const val = w > 0 || level === 0 ? w.toFixed(1) + '\u00a0%' : '\u2014';
+  const val = level != null ? w.toFixed(1) + '\u00a0%' : '\u2014';
   return `<div class="sfp-row" data-ch="${chId}">
     <span class="row-lbl">Signal</span>
     <div class="bar-track"><div class="bar-fill bar-${cls}" style="width:${w}%"></div></div>
     <span class="row-val ${cls}">${val}</span>
   </div>`;
 }
-
-function sfpBlock(num, cam) {
-  const n = num === 1 ? '1' : '2';
-  return `
-    <div class="sfp-section">
-      <div class="sfp-title">SFP ${n}</div>
-      ${cableRow(`sfp${n}_cable`,  cam[`sfp${n}_cable_level`],  cam[`sfp${n}_cable_status`],  cam[`sfp${n}_cable_ok_limit`],  cam[`sfp${n}_cable_error_limit`])}
-      ${signalRow(`sfp${n}_signal`, cam[`sfp${n}_signal_level`], cam[`sfp${n}_signal_status`], cam[`sfp${n}_signal_ok_limit`], cam[`sfp${n}_signal_error_limit`])}
-    </div>`;
+function sfpBlock(n, cam) {
+  return `<div class="sfp-section">
+    <div class="sfp-title">SFP ${n}</div>
+    ${cableRow(`sfp${n}_cable`,  cam[`sfp${n}_cable_level`],  cam[`sfp${n}_cable_ok_limit`],  cam[`sfp${n}_cable_error_limit`])}
+    ${signalRow(`sfp${n}_signal`, cam[`sfp${n}_signal_level`], cam[`sfp${n}_signal_ok_limit`], cam[`sfp${n}_signal_error_limit`])}
+  </div>`;
 }
 
-// ── Card render ───────────────────────────────────────────────────
+// ── Card HTML ─────────────────────────────────────────────────────
 function cardHTML(cam) {
   const overall = cam.overall_status || 'unknown';
   const badge   = overall === 'unknown' ? 'NO\u00a0DATA' : overall.toUpperCase();
   return `<div class="cam ${overall}" id="cam-${cam.cam}">
     <div class="cam-head">
-      <span class="cam-title">${cam.label || 'CAM\u00a0' + cam.cam}</span>
+      <span class="cam-title">${cam.label || 'CAM\u00a0' + cam.cam}<span class="cam-sub">${cam.deviceid || ''}</span></span>
       <span class="badge ${overall}">${badge}</span>
     </div>
     ${sfpBlock(1, cam)}
@@ -249,35 +236,20 @@ function cardHTML(cam) {
   </div>`;
 }
 
-// ── In-place patching ─────────────────────────────────────────────
-function patchCableRow(card, chId, level, okLimit, errLimit) {
+// ── In-place patch ────────────────────────────────────────────────
+function patchRow(card, chId, cls, w, val, isVal) {
   const row = card.querySelector(`[data-ch="${chId}"]`);
   if (!row) return;
-  const cls  = cableCls(level, okLimit, errLimit);
-  const fill = row.querySelector('.bar-fill');
-  if (fill) {
-    fill.style.width = cablePct(level) + '%';
-    fill.className   = `bar-fill bar-${cls}`;
-  }
-  row.querySelector('.row-val').textContent = level != null ? level.toFixed(1) + '\u00a0dBm' : '\u2014';
-  row.querySelector('.row-val').className   = `row-val ${cls}`;
-}
-
-function patchSignalRow(card, chId, level, okLimit, errLimit) {
-  const row = card.querySelector(`[data-ch="${chId}"]`);
-  if (!row) return;
-  const cls  = signalCls(level, okLimit, errLimit);
-  const w    = signalPct(level, errLimit);
   const fill = row.querySelector('.bar-fill');
   if (fill) { fill.style.width = w + '%'; fill.className = `bar-fill bar-${cls}`; }
-  row.querySelector('.row-val').textContent = w > 0 || level === 0 ? w.toFixed(1) + '\u00a0%' : '\u2014';
-  row.querySelector('.row-val').className   = `row-val ${cls}`;
+  const v = row.querySelector('.row-val');
+  v.textContent = val;
+  v.className   = `row-val ${cls}`;
 }
 
 function patchCard(cam) {
   const overall = cam.overall_status || 'unknown';
   let card = document.getElementById('cam-' + cam.cam);
-
   if (!card) {
     const grid  = document.getElementById('grid');
     const empty = grid.querySelector('.empty');
@@ -286,44 +258,58 @@ function patchCard(cam) {
     tmp.innerHTML = cardHTML(cam);
     card = tmp.firstChild;
     const after = [...grid.querySelectorAll('.cam')]
-      .find(el => parseInt(el.id.replace('cam-','')) > cam.cam);
+      .find(el => (el.dataset.sortKey || el.id.replace('cam-','')) > String(cam.sort_key ?? cam.cam));
     after ? grid.insertBefore(card, after) : grid.appendChild(card);
+    card.dataset.sortKey = cam.sort_key ?? cam.cam;
     return;
   }
-
   card.className = 'cam ' + overall;
+  card.dataset.sortKey = cam.sort_key ?? cam.cam;
   const badge = card.querySelector('.badge');
   badge.className   = 'badge ' + overall;
   badge.textContent = overall === 'unknown' ? 'NO\u00a0DATA' : overall.toUpperCase();
   const title = card.querySelector('.cam-title');
-  if (title && cam.label) title.textContent = cam.label;
+  if (title && cam.label) {
+    title.innerHTML = cam.label
+      + (cam.deviceid ? `<span class="cam-sub">${cam.deviceid}</span>` : '');
+  }
 
-  for (const n of ['1', '2']) {
-    patchCableRow(card, `sfp${n}_cable`,
-      cam[`sfp${n}_cable_level`], cam[`sfp${n}_cable_ok_limit`], cam[`sfp${n}_cable_error_limit`]);
-    patchSignalRow(card, `sfp${n}_signal`,
-      cam[`sfp${n}_signal_level`], cam[`sfp${n}_signal_ok_limit`], cam[`sfp${n}_signal_error_limit`]);
+  for (const n of ['1','2']) {
+    const cLvl = cam[`sfp${n}_cable_level`], cOk = cam[`sfp${n}_cable_ok_limit`], cErr = cam[`sfp${n}_cable_error_limit`];
+    patchRow(card, `sfp${n}_cable`,  cableCls(cLvl, cOk, cErr),  cablePct(cLvl),
+             cLvl != null ? cLvl.toFixed(1) + '\u00a0dBm' : '\u2014');
+    const sLvl = cam[`sfp${n}_signal_level`], sOk = cam[`sfp${n}_signal_ok_limit`], sErr = cam[`sfp${n}_signal_error_limit`];
+    const sW = signalPct(sLvl, sErr);
+    patchRow(card, `sfp${n}_signal`, signalCls(sLvl, sOk, sErr), sW,
+             sLvl != null ? sW.toFixed(1) + '\u00a0%' : '\u2014');
   }
 }
 
-// ── Gateway status indicator ──────────────────────────────────────
+// ── Status + render ───────────────────────────────────────────────
+let gwConnected = false;
+
 function setGwStatus(connected) {
-  document.getElementById('dot').className    = 'dot ' + (connected ? 'ok' : 'err');
+  gwConnected = connected;
+  document.getElementById('dot').className     = 'dot ' + (connected ? 'ok' : 'err');
   document.getElementById('gw-lbl').textContent = connected ? 'Connected' : 'Disconnected';
 }
 
-// ── Grid render ───────────────────────────────────────────────────
 function renderAll(cameras) {
   const grid = document.getElementById('grid');
   if (!cameras.length) {
-    grid.innerHTML = '<div class="empty">No cameras detected</div>';
+    grid.innerHTML = '<div class="empty">No cameras connected</div>';
     return;
   }
-  grid.innerHTML = [...cameras].sort((a,b) => a.cam - b.cam).map(cardHTML).join('');
+  const sorted = [...cameras].sort((a, b) => (a.sort_key ?? a.cam) - (b.sort_key ?? b.cam));
+  grid.innerHTML = sorted.map(cardHTML).join('');
+  sorted.forEach(c => {
+    const card = document.getElementById('cam-' + c.cam);
+    if (card) card.dataset.sortKey = c.sort_key ?? c.cam;
+  });
 }
 
-// ── HTTP snapshot (Cloudflare / proxy fallback) ───────────────────
-async function loadSnapshot() {
+// ── HTTP polling (every 30s, immediate on load) ───────────────────
+async function poll() {
   try {
     const data = await fetch('/api/cameras').then(r => r.json());
     setGwStatus(data.connected);
@@ -331,7 +317,17 @@ async function loadSnapshot() {
   } catch { setGwStatus(false); }
 }
 
-// ── SSE connection ────────────────────────────────────────────────
+// ── Auto-reload when disconnected ─────────────────────────────────
+setInterval(() => {
+  if (!gwConnected) {
+    window.location.reload();
+  }
+}, 30000);
+
+// ── Periodic refresh every 30s regardless ─────────────────────────
+setInterval(poll, 30000);
+
+// ── SSE for instant live updates ─────────────────────────────────
 function connect() {
   const es = new EventSource('/stream');
 
@@ -363,7 +359,7 @@ function connect() {
   };
 }
 
-loadSnapshot();
+poll();
 connect();
 </script>
 </body>

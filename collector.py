@@ -4,12 +4,13 @@ XML v2.0 protocol over TCP.
 
 Connection sequence:
   1. <application-authentication-request>   (required first message)
-  2. <device-information-request>           (discover cameras, subscribe to connect/disconnect)
+  2. <device-information-request subscribe> (discover cameras + watch for changes)
   3. <function-information-request>         (load status Mode option mappings)
   4. <function-value-request subscribe>     (get current values + live updates)
 
-The gateway pushes <function-value-indication> on every change — no polling needed.
-Device connect/disconnect arrives as <device-information-indication>.
+The collector connects and authenticates immediately on start, even if no
+cameras are available. Cameras that connect later are detected automatically
+via device-information-indication and subscribed on arrival.
 """
 
 import logging
@@ -26,48 +27,45 @@ log = logging.getLogger(__name__)
 # ── Configuration ──────────────────────────────────────────────────────────────
 GATEWAY_IP     = "192.168.61.10"   # Camera Connect Gateway IP address
 GATEWAY_PORT   = 8080              # Default XML port
-APP_NAME       = "F.L.A.P.S"    # Visible in gateway web interface / logs
+APP_NAME       = "FibreMonitor"    # Visible in gateway web interface / logs
 CAMERA_NUMBERS = []                # Specific camera numbers to monitor; [] = auto-discover
 
 
 # ── SFP NS_IDs ─────────────────────────────────────────────────────────────────
-# IP Transmission SFP functions. Signal convention: 0.0 raw = 100% (full signal).
-# All 16 IP Transmission SFP NS_IDs — levels, statuses and thresholds.
-# Thresholds are static but are returned alongside live values in subscribe="true".
-# Cable scale: higher = better. ok_limit = lower bound of "good" range.
-# Signal scale: lower = better (0 = full signal). error_limit = max acceptable loss.
+# Cable: higher value = better. ok_limit = min "good" level, err_limit = failure level.
+# Signal: lower value = better (0 = perfect). err_limit = max acceptable loss.
 SFP_IDS = {
-    9105: "sfp1_cable_level",         # SFP 1 Cable actual
-    9107: "sfp1_cable_status",        # SFP 1 Cable status (Mode)
-    9104: "sfp1_cable_error_limit",   # SFP 1 Cable error threshold
-    9106: "sfp1_cable_ok_limit",      # SFP 1 Cable ok threshold
-    9109: "sfp2_cable_level",         # SFP 2 Cable actual
-    9111: "sfp2_cable_status",        # SFP 2 Cable status (Mode)
-    9108: "sfp2_cable_error_limit",   # SFP 2 Cable error threshold
-    9110: "sfp2_cable_ok_limit",      # SFP 2 Cable ok threshold
-    9113: "sfp1_signal_level",        # SFP 1 Signal actual (0 = full)
-    9115: "sfp1_signal_status",       # SFP 1 Signal status (Mode)
-    9112: "sfp1_signal_error_limit",  # SFP 1 Signal error threshold (max loss)
-    9114: "sfp1_signal_ok_limit",     # SFP 1 Signal ok threshold (min loss for ok)
-    9117: "sfp2_signal_level",        # SFP 2 Signal actual
-    9119: "sfp2_signal_status",       # SFP 2 Signal status (Mode)
-    9116: "sfp2_signal_error_limit",  # SFP 2 Signal error threshold
-    9118: "sfp2_signal_ok_limit",     # SFP 2 Signal ok threshold
+    9105: "sfp1_cable_level",
+    9107: "sfp1_cable_status",
+    9104: "sfp1_cable_error_limit",
+    9106: "sfp1_cable_ok_limit",
+    9109: "sfp2_cable_level",
+    9111: "sfp2_cable_status",
+    9108: "sfp2_cable_error_limit",
+    9110: "sfp2_cable_ok_limit",
+    9113: "sfp1_signal_level",
+    9115: "sfp1_signal_status",
+    9112: "sfp1_signal_error_limit",
+    9114: "sfp1_signal_ok_limit",
+    9117: "sfp2_signal_level",
+    9119: "sfp2_signal_status",
+    9116: "sfp2_signal_error_limit",
+    9118: "sfp2_signal_ok_limit",
 }
 STATUS_IDS = {9107, 9111, 9115, 9119}
 
-# Default option map — gateway uses "OK", "Critic"/"Critical", "Error".
-# Overwritten at startup by function-information-request if the gateway responds.
+# Default option map (gateway value 0=ok, 1=critical, 2=error).
+# Overwritten at startup via function-information-request.
 DEFAULT_OPTION_MAP = {ns_id: {0: "ok", 1: "critical", 2: "error"} for ns_id in STATUS_IDS}
 
 
-# ── XML message builders ───────────────────────────────────────────────────────
+# ── XML builders ───────────────────────────────────────────────────────────────
 
 def _msg(xml: str) -> bytes:
     return (xml.strip() + "\n").encode()
 
 
-def auth_request() -> bytes:
+def _auth() -> bytes:
     return _msg(
         f'<application-authentication-request xml-protocol="2.0" response-level="Never">'
         f"<name>{APP_NAME}</name>"
@@ -75,12 +73,11 @@ def auth_request() -> bytes:
     )
 
 
-def device_info_request() -> bytes:
+def _device_request() -> bytes:
     return _msg('<device-information-request subscribe="true"/>')
 
 
-def option_map_request(sessionids: list[str]) -> bytes:
-    """Request Mode option definitions for status fields."""
+def _option_map_request(sessionids: list[str]) -> bytes:
     devices = "".join(
         f"<device><sessionid>{sid}</sessionid>"
         + "".join(f'<function id="{fid}"/>' for fid in STATUS_IDS)
@@ -94,8 +91,7 @@ def option_map_request(sessionids: list[str]) -> bytes:
     )
 
 
-def subscribe_request(cam_states: list[dict]) -> bytes:
-    """Subscribe to all SFP values for the given cameras (addressed by sessionid)."""
+def _subscribe(cam_states: list[dict]) -> bytes:
     devices = "".join(
         f"<device><sessionid>{s['sessionid']}</sessionid>"
         + "".join(f'<function id="{fid}"/>' for fid in SFP_IDS)
@@ -114,6 +110,17 @@ def subscribe_request(cam_states: list[dict]) -> bytes:
 
 # ── XML parsers ────────────────────────────────────────────────────────────────
 
+def _t(el) -> str:
+    return el.text.strip() if el is not None and el.text else ""
+
+
+def _parse(xml_str: str):
+    try:
+        return ET.fromstring(f"<root>{xml_str}</root>")
+    except ET.ParseError:
+        return None
+
+
 def _parse_devices(root) -> list[dict]:
     result = []
     for ind in root.findall("device-information-indication"):
@@ -122,21 +129,18 @@ def _parse_devices(root) -> list[dict]:
             type_el = dev.find("type")
             if name_el is None or type_el is None:
                 continue
-            def text(el):
-                return el.text.strip() if el is not None and el.text else ""
             result.append({
-                "cam":              int(name_el.text.strip()),
-                "type":             text(type_el),
-                "state":            dev.get("connection-state", "connected"),
-                "sessionid":        text(dev.find("sessionid")),
-                "deviceid":         text(dev.find("deviceid")),
-                "alias":            text(dev.find("alias")),
+                "cam":       int(name_el.text.strip()),
+                "type":      _t(type_el),
+                "state":     dev.get("connection-state", "connected"),
+                "sessionid": _t(dev.find("sessionid")),
+                "alias":     _t(dev.find("alias")),
+                "deviceid":  _t(dev.find("deviceid")),
             })
     return result
 
 
 def _parse_option_map(root) -> dict:
-    """Return {ns_id: {int_val: status_str}} from function-information-indication."""
     mappings = {}
     for ind in root.findall("function-information-indication"):
         for dev in ind.findall("device"):
@@ -153,7 +157,7 @@ def _parse_option_map(root) -> dict:
                         continue
                     if "ok" in name:
                         opts[val] = "ok"
-                    elif "critic" in name:     # matches "Critic", "Critical"
+                    elif "critic" in name:
                         opts[val] = "critical"
                     elif "error" in name or "err" in name:
                         opts[val] = "error"
@@ -163,44 +167,40 @@ def _parse_option_map(root) -> dict:
 
 
 def _parse_values(root, option_map: dict) -> list[dict]:
-    """Return [{cam, field, level, status}] from function-value-indication."""
     updates = []
-    # Spec note: some gateways use function-information-indication for value responses
-    inds = root.findall("function-value-indication") + root.findall("function-information-indication")
-    for ind in inds:
-        for dev in ind.findall("device"):
-            name_el = dev.find("name")
-            if name_el is None:
-                continue
-            try:
-                cam = int(name_el.text.strip())
-            except (TypeError, ValueError):
-                continue
-            for func in dev.findall("function"):
-                fid = int(func.get("id", 0))
-                if fid not in SFP_IDS:
+    for tag in ("function-value-indication", "function-information-indication"):
+        for ind in root.findall(tag):
+            for dev in ind.findall("device"):
+                name_el = dev.find("name")
+                if name_el is None:
                     continue
-                val_el = func.find("value")
-                if val_el is None or val_el.text is None:
+                try:
+                    cam = int(name_el.text.strip())
+                except (TypeError, ValueError):
                     continue
-                raw    = val_el.text.strip()
-                field  = SFP_IDS[fid]
-                level  = status = None
-                if fid in STATUS_IDS:
-                    try:
-                        status = option_map.get(fid, {}).get(int(raw), raw.lower())
-                    except ValueError:
-                        status = raw.lower()
-                else:
-                    try:
-                        level = round(float(raw), 2)
-                    except ValueError:
-                        pass
-                updates.append({"cam": cam, "field": field, "level": level, "status": status})
+                for func in dev.findall("function"):
+                    fid    = int(func.get("id", 0))
+                    val_el = func.find("value")
+                    if fid not in SFP_IDS or val_el is None or not val_el.text:
+                        continue
+                    raw    = val_el.text.strip()
+                    field  = SFP_IDS[fid]
+                    level = status = None
+                    if fid in STATUS_IDS:
+                        try:
+                            status = option_map.get(fid, {}).get(int(raw), raw.lower())
+                        except ValueError:
+                            status = raw.lower()
+                    else:
+                        try:
+                            level = round(float(raw), 2)
+                        except ValueError:
+                            pass
+                    updates.append({"cam": cam, "field": field, "level": level, "status": status})
     return updates
 
 
-# ── Message stream splitter ────────────────────────────────────────────────────
+# ── Stream splitter ────────────────────────────────────────────────────────────
 
 _ROOT_TAGS = [
     "application-authentication-indication",
@@ -211,8 +211,7 @@ _ROOT_TAGS = [
 ]
 
 
-def _split_messages(buf: str) -> tuple[list[str], str]:
-    """Extract complete XML messages from buffer. Returns (messages, remainder)."""
+def _split(buf: str) -> tuple[list[str], str]:
     messages = []
     while True:
         best = -1
@@ -229,16 +228,9 @@ def _split_messages(buf: str) -> tuple[list[str], str]:
     return messages, buf
 
 
-def _parse(xml_str: str):
-    """Wrap in root element and parse. Returns None on error."""
-    try:
-        return ET.fromstring(f"<root>{xml_str}</root>")
-    except ET.ParseError:
-        return None
+# ── Overall status ─────────────────────────────────────────────────────────────
 
-
-def _derive_overall(state: dict) -> str:
-    """Return worst-case status across all four SFP status fields."""
+def _overall(state: dict) -> str:
     statuses = [state.get(f) for f in (
         "sfp1_cable_status", "sfp2_cable_status",
         "sfp1_signal_status", "sfp2_signal_status"
@@ -259,15 +251,16 @@ def _derive_overall(state: dict) -> str:
 
 class GrassValleyCollector:
     """
-    Manages the TCP connection to the Camera Connect Gateway.
-    Maintains live camera state and notifies SSE listeners on every change.
+    Maintains a persistent TCP connection to the Camera Connect Gateway.
+    Authenticates immediately on boot — cameras are optional and can join
+    or leave at any time. Alias is used as the primary camera identifier.
     """
 
     def __init__(self):
         self._lock       = threading.Lock()
-        self._cameras:   dict[int, dict] = {}
+        self._cameras:   dict[int, dict] = {}   # keyed by camera number
         self._option_map = dict(DEFAULT_OPTION_MAP)
-        self._connected  = False
+        self._connected  = False   # True once authenticated, regardless of cameras
         self._sock       = None
         self._listeners: list[queue.Queue] = []
 
@@ -281,7 +274,7 @@ class GrassValleyCollector:
 
     def get_cameras(self) -> list[dict]:
         with self._lock:
-            return list(self._cameras.values())
+            return sorted(self._cameras.values(), key=lambda c: c.get("sort_key", c["cam"]))
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=128)
@@ -313,55 +306,53 @@ class GrassValleyCollector:
             sock.connect((GATEWAY_IP, GATEWAY_PORT))
             log.info("Connected. Authenticating…")
 
-            # Step 1: authenticate (must be first message)
-            sock.sendall(auth_request())
-            time.sleep(0.3)
+            # Step 1: authenticate (must be first message; no response expected)
+            sock.sendall(_auth())
+            time.sleep(0.5)
 
-            # Step 2: discover devices
-            sock.sendall(device_info_request())
-            devices = _parse_devices(_parse(self._recv_burst(sock)) or ET.Element("root"))
+            # Step 2: discover devices and subscribe to connection changes
+            sock.sendall(_device_request())
+            raw     = self._recv_burst(sock)
+            devices = _parse_devices(_parse(raw) or ET.Element("root"))
 
+            # Mark as connected immediately after auth — cameras are optional
+            self._connected = True
+            log.info(f"Authenticated. Found {len([d for d in devices if d['type'] == 'Camera'])} camera(s).")
+
+            # Seed initial cameras
             cam_numbers = list(CAMERA_NUMBERS) or sorted({
                 d["cam"] for d in devices
-                if d["type"] in ("Camera", "Basestation") and d["state"] == "connected"
+                if d["type"] == "Camera" and d["state"] == "connected"
             })
-
-            if not cam_numbers:
-                log.warning("No cameras found — check GATEWAY_IP and CAMERA_NUMBERS config.")
-                time.sleep(10)
-                return
-
-            log.info(f"Found {len(cam_numbers)} camera(s): {cam_numbers}")
 
             with self._lock:
                 for d in devices:
-                    if d["cam"] not in cam_numbers or d["type"] != "Camera":
+                    if d["type"] != "Camera" or d["state"] != "connected":
                         continue
-                    cam = d["cam"]
-                    if cam not in self._cameras:
-                        self._cameras[cam] = {"cam": cam, "overall_status": "unknown"}
-                    self._cameras[cam]["label"]     = d["deviceid"] or d["alias"] or f"CAM {cam}"
-                    self._cameras[cam]["sessionid"] = d["sessionid"]
+                    if CAMERA_NUMBERS and d["cam"] not in CAMERA_NUMBERS:
+                        continue
+                    self._cameras[d["cam"]] = self._make_state(d)
 
-            # Step 3: load Mode option mappings (ok/error/critical integer values vary by model)
+            # Step 3: load Mode option mappings
             sessionids = [s["sessionid"] for s in self._cameras.values() if s.get("sessionid")]
             if sessionids:
-                sock.sendall(option_map_request(sessionids))
+                sock.sendall(_option_map_request(sessionids))
                 loaded = _parse_option_map(_parse(self._recv_burst(sock)) or ET.Element("root"))
                 if loaded:
                     with self._lock:
                         self._option_map = loaded
                     log.info(f"Loaded option mappings for {len(loaded)} status functions.")
-                else:
-                    log.info("Using default option mappings (ok=0, critical=1, error=2).")
 
-            # Step 4: subscribe to live SFP values
+            # Step 4: subscribe to SFP values for all known cameras
             self._sock = sock
-            req = subscribe_request(list(self._cameras.values()))
+            with self._lock:
+                cam_states = list(self._cameras.values())
+            req = _subscribe(cam_states)
             if req:
                 sock.sendall(req)
-                log.info("Subscribed to SFP values.")
-            self._connected = True
+                log.info(f"Subscribed to SFP values for {len(cam_states)} camera(s).")
+            else:
+                log.info("No cameras to subscribe to yet — waiting for connections.")
 
             # Step 5: process incoming messages indefinitely
             sock.settimeout(30)
@@ -372,14 +363,13 @@ class GrassValleyCollector:
                     if not chunk:
                         raise ConnectionError("Gateway closed the connection.")
                     buf += chunk
-                    messages, buf = _split_messages(buf)
+                    messages, buf = _split(buf)
                     for xml_str in messages:
                         self._handle(xml_str)
                 except socket.timeout:
                     log.debug("No data from gateway for 30s (subscription active).")
 
     def _recv_burst(self, sock: socket.socket, timeout: float = 3.0) -> str:
-        """Read until no data arrives for `timeout` seconds."""
         sock.settimeout(timeout)
         data = ""
         while True:
@@ -392,6 +382,26 @@ class GrassValleyCollector:
                 break
         return data
 
+    def _make_state(self, d: dict) -> dict:
+        """Build initial camera state dict from a device discovery record."""
+        alias = d.get("alias", "").strip()
+        # Parse numeric part of alias for sort ordering (e.g. "Cam 2" → 2)
+        sort_key = d["cam"]
+        if alias:
+            import re
+            m = re.search(r'\d+', alias)
+            if m:
+                sort_key = int(m.group())
+        return {
+            "cam":            d["cam"],
+            "label":          alias or d.get("deviceid") or f"CAM {d['cam']}",
+            "alias":          alias,
+            "deviceid":       d.get("deviceid", ""),
+            "sessionid":      d.get("sessionid", ""),
+            "overall_status": "unknown",
+            "sort_key":       sort_key,
+        }
+
     # ── Message handler ────────────────────────────────────────────────────────
 
     def _handle(self, xml_str: str):
@@ -401,9 +411,9 @@ class GrassValleyCollector:
         if root is None:
             return
 
-        # Device connect / disconnect events
+        # Device connect / disconnect
         for d in _parse_devices(root):
-            if d["type"] not in ("Camera", "Basestation"):
+            if d["type"] != "Camera":
                 continue
             cam = d["cam"]
 
@@ -416,19 +426,20 @@ class GrassValleyCollector:
                     log.info(f"Camera {cam} disconnected.")
                     self._notify({"event": "remove", "data": {"cam": cam}})
 
-            elif d["state"] == "connected" and d["type"] == "Camera":
+            elif d["state"] == "connected":
                 with self._lock:
                     known = cam in self._cameras
                 if not known:
-                    label = d["deviceid"] or d["alias"] or f"CAM {cam}"
-                    log.info(f"Camera {cam} ({label}) connected.")
-                    state = {"cam": cam, "label": label, "sessionid": d["sessionid"], "overall_status": "unknown"}
+                    if CAMERA_NUMBERS and cam not in CAMERA_NUMBERS:
+                        continue
+                    state = self._make_state(d)
+                    log.info(f"Camera {cam} ({state['label']}) connected.")
                     with self._lock:
                         self._cameras[cam] = state
                     self._notify({"event": "camera", "data": dict(state)})
                     if self._sock:
                         try:
-                            self._sock.sendall(subscribe_request([state]))
+                            self._sock.sendall(_subscribe([state]))
                         except OSError as e:
                             log.warning(f"Could not subscribe to CAM {cam}: {e}")
 
@@ -444,12 +455,14 @@ class GrassValleyCollector:
         with self._lock:
             for u in updates:
                 cam   = u["cam"]
-                state = self._cameras.setdefault(cam, {"cam": cam, "label": f"CAM {cam}", "overall_status": "unknown"})
+                state = self._cameras.get(cam)
+                if state is None:
+                    continue
                 if u["level"] is not None:
                     state[u["field"]] = u["level"]
                 elif u["status"] is not None:
                     state[u["field"]] = u["status"]
-                state["overall_status"] = _derive_overall(state)
+                state["overall_status"] = _overall(state)
                 state["last_updated"]   = time.time()
                 snapshot = dict(state)
 
@@ -457,7 +470,6 @@ class GrassValleyCollector:
             self._notify({"event": "camera", "data": snapshot})
 
     def _notify(self, event: dict):
-        """Push event to all SSE listeners, pruning disconnected ones."""
         dead = []
         for q in list(self._listeners):
             try:
